@@ -1,0 +1,8 @@
+settings:
+    channel:
+        link: https://basyura.org/rssgen/feed.xml
+
+feeds:
+    - title: basyura's feed
+      url: https://bz-vermillion.com/news/
+      xpath: ul.news_list
