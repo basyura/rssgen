@@ -102,3 +102,19 @@
 - `config.example.yml` の `link` 表記を YAML として有効な形式に修正した。
 - `go test ./...` は成功した。
 - `go run . -config config.example.yml` で実サイトから RSS XML が出力されることを確認した。
+
+## AGENTS.md 追加修正案
+
+- カレントディレクトリに `AGENTS.md` が存在しないことを確認した。
+- リポジトリ向けの contributor guide として `AGENTS.md` を追加する。
+- 内容は Go CLI 構成、開発コマンド、`gofmt`、テスト、設定ファイル、
+  コミットと PR 方針を簡潔にまとめる。
+- 生成物の `feed.xml` やビルド済みバイナリはコミットしない旨を記載する。
+
+## AGENTS.md 追加実施結果
+
+- `AGENTS.md` を新規作成した。
+- タイトルは `Repository Guidelines` とした。
+- プロジェクト構成、開発コマンド、Go のスタイル、テスト方針、
+  YAML 設定、コミットと PR 方針を記載した。
+- 文量は 306 words で要件の範囲内であることを確認した。
