@@ -19,6 +19,8 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+const maxItemsPerFeed = 5
+
 type ConfigFile struct {
 	Settings Settings `yaml:"settings"`
 	Feeds    []Config `yaml:"feeds"`
@@ -29,13 +31,14 @@ type Settings struct {
 }
 
 type ChannelSettings struct {
-	Link string `yaml:"link"`
+	Title       string `yaml:"title"`
+	Link        string `yaml:"link"`
+	Description string `yaml:"description"`
 }
 
 type Config struct {
 	URL   string `yaml:"url"`
 	Title string `yaml:"title"`
-	Link  string `yaml:"-"`
 	XPath string `yaml:"xpath"`
 }
 
@@ -65,6 +68,7 @@ type GUID struct {
 
 type FeedItem struct {
 	Title string
+	Date  string
 	Link  string
 }
 
@@ -88,29 +92,22 @@ func run(args []string, stdout io.Writer) error {
 		return errors.New("missing required -config")
 	}
 
-	configs, err := loadConfig(*configPath)
+	configFile, err := loadConfig(*configPath)
 	if err != nil {
 		return err
-	}
-	if *outputPath != "" && len(configs) > 1 {
-		return errors.New("-output can only be used with a single config entry")
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
+	items, err := collectAllItems(ctx, http.DefaultClient, configFile.Feeds)
+	if err != nil {
+		return err
+	}
+
 	var buf bytes.Buffer
-	for i, cfg := range configs {
-		items, err := collectItems(ctx, http.DefaultClient, cfg)
-		if err != nil {
-			return err
-		}
-		if i > 0 {
-			buf.WriteByte('\n')
-		}
-		if err := writeRSS(&buf, buildRSS(cfg, items)); err != nil {
-			return err
-		}
+	if err := writeRSS(&buf, buildRSS(configFile.Settings.Channel, items)); err != nil {
+		return err
 	}
 
 	if *outputPath == "" {
@@ -120,53 +117,74 @@ func run(args []string, stdout io.Writer) error {
 	return os.WriteFile(*outputPath, buf.Bytes(), 0o644)
 }
 
-func loadConfig(path string) ([]Config, error) {
+func loadConfig(path string) (ConfigFile, error) {
 	body, err := os.ReadFile(path)
 	if err != nil {
-		return nil, err
+		return ConfigFile{}, err
 	}
 
 	var configFile ConfigFile
 	if err := yaml.Unmarshal(body, &configFile); err != nil {
-		return nil, err
+		return ConfigFile{}, err
 	}
-	configs := configFile.Feeds
-	if len(configs) == 0 {
-		return nil, errors.New("config feeds must contain at least one entry")
+	channel := configFile.Settings.Channel
+	if strings.TrimSpace(channel.Title) == "" {
+		return ConfigFile{}, errors.New("settings.channel.title is required")
 	}
-	for i, cfg := range configs {
+	if strings.TrimSpace(channel.Link) == "" {
+		return ConfigFile{}, errors.New("settings.channel.link is required")
+	}
+	if strings.TrimSpace(channel.Description) == "" {
+		return ConfigFile{}, errors.New("settings.channel.description is required")
+	}
+	if len(configFile.Feeds) == 0 {
+		return ConfigFile{}, errors.New("config feeds must contain at least one entry")
+	}
+	for i, cfg := range configFile.Feeds {
 		if strings.TrimSpace(cfg.Title) == "" {
-			return nil, fmt.Errorf("feeds[%d].title is required", i)
+			return ConfigFile{}, fmt.Errorf("feeds[%d].title is required", i)
 		}
 		if strings.TrimSpace(cfg.URL) == "" {
-			return nil, fmt.Errorf("feeds[%d].url is required", i)
+			return ConfigFile{}, fmt.Errorf("feeds[%d].url is required", i)
 		}
 		if strings.TrimSpace(cfg.XPath) == "" {
-			return nil, fmt.Errorf("feeds[%d].xpath is required", i)
+			return ConfigFile{}, fmt.Errorf("feeds[%d].xpath is required", i)
 		}
-		configs[i].Link = configFile.Settings.Channel.Link
 	}
-	return configs, nil
+	return configFile, nil
+}
+
+func collectAllItems(ctx context.Context, client *http.Client, configs []Config) ([]FeedItem, error) {
+	seen := map[string]struct{}{}
+	var items []FeedItem
+	for _, cfg := range configs {
+		sourceItems, err := collectItems(ctx, client, cfg)
+		if err != nil {
+			return nil, fmt.Errorf("collect %s: %w", cfg.Title, err)
+		}
+		for _, item := range sourceItems {
+			if _, ok := seen[item.Link]; ok {
+				continue
+			}
+			seen[item.Link] = struct{}{}
+			items = append(items, item)
+		}
+	}
+	return items, nil
 }
 
 func collectItems(ctx context.Context, client *http.Client, cfg Config) ([]FeedItem, error) {
-	seen := map[string]struct{}{}
-	var items []FeedItem
 	body, err := fetch(ctx, client, cfg.URL)
 	if err != nil {
 		return nil, err
 	}
 
-	sourceItems, err := collectItemsFromHTML(cfg.URL, cfg.XPath, body)
+	items, err := collectItemsFromHTML(cfg.URL, cfg.XPath, body)
 	if err != nil {
 		return nil, err
 	}
-	for _, item := range sourceItems {
-		if _, ok := seen[item.Link]; ok {
-			continue
-		}
-		seen[item.Link] = struct{}{}
-		items = append(items, item)
+	for i := range items {
+		items[i].Title = formatItemTitle(cfg.Title, items[i])
 	}
 	return items, nil
 }
@@ -207,13 +225,18 @@ func collectItemsFromHTML(sourceURL, selector string, body []byte) ([]FeedItem, 
 		return nil, err
 	}
 
-	var items []FeedItem
+	seen := map[string]struct{}{}
+	items := make([]FeedItem, 0, maxItemsPerFeed)
+parentsLoop:
 	for _, parent := range parents {
 		for child := parent.FirstChild; child != nil; child = child.NextSibling {
 			if child.Type != html.ElementNode {
 				continue
 			}
-			linkNode := htmlquery.FindOne(child, ".//a[@href]")
+			linkNode := child
+			if child.Data != "a" || htmlquery.SelectAttr(child, "href") == "" {
+				linkNode = htmlquery.FindOne(child, ".//a[@href]")
+			}
 			if linkNode == nil {
 				continue
 			}
@@ -222,14 +245,53 @@ func collectItemsFromHTML(sourceURL, selector string, body []byte) ([]FeedItem, 
 			if err != nil {
 				continue
 			}
-			title := strings.Join(strings.Fields(htmlquery.InnerText(linkNode)), " ")
+			if _, ok := seen[link]; ok {
+				continue
+			}
+			date := extractText(linkNode,
+				".//*[contains(concat(' ', normalize-space(@class), ' '), ' date ')]",
+				".//h5",
+			)
+			title := extractText(linkNode,
+				".//*[contains(concat(' ', normalize-space(@class), ' '), ' comment ')]",
+				".//*[contains(concat(' ', normalize-space(@class), ' '), ' NW-R ')]//p",
+			)
+			if title == "" {
+				title = strings.Join(strings.Fields(htmlquery.InnerText(linkNode)), " ")
+			}
 			if title == "" {
 				title = link
 			}
-			items = append(items, FeedItem{Title: title, Link: link})
+			seen[link] = struct{}{}
+			items = append(items, FeedItem{Title: title, Date: date, Link: link})
+			if len(items) == maxItemsPerFeed {
+				break parentsLoop
+			}
 		}
 	}
 	return items, nil
+}
+
+func extractText(node *html.Node, xpaths ...string) string {
+	for _, xpath := range xpaths {
+		textNode := htmlquery.FindOne(node, xpath)
+		if textNode == nil {
+			continue
+		}
+		text := strings.Join(strings.Fields(htmlquery.InnerText(textNode)), " ")
+		if text != "" {
+			return text
+		}
+	}
+	return ""
+}
+
+func formatItemTitle(sourceTitle string, item FeedItem) string {
+	sourceTitle = strings.TrimSpace(sourceTitle)
+	if item.Date == "" {
+		return fmt.Sprintf("%s - %s", sourceTitle, item.Title)
+	}
+	return fmt.Sprintf("%s - %s : %s", sourceTitle, item.Date, item.Title)
 }
 
 func normalizeXPath(selector string) string {
@@ -239,10 +301,13 @@ func normalizeXPath(selector string) string {
 	}
 
 	tag, className, ok := strings.Cut(selector, ".")
-	if ok && tag != "" && className != "" && !strings.ContainsAny(className, " .#>/[") {
-		return fmt.Sprintf("//%s[contains(concat(' ', normalize-space(@class), ' '), ' %s ')]", tag, className)
+	if !ok || className == "" || strings.ContainsAny(className, " .#>/[") {
+		return selector
 	}
-	return selector
+	if tag == "" {
+		return fmt.Sprintf("//*[contains(concat(' ', normalize-space(@class), ' '), ' %s ')]", className)
+	}
+	return fmt.Sprintf("//%s[contains(concat(' ', normalize-space(@class), ' '), ' %s ')]", tag, className)
 }
 
 func resolveURL(base *url.URL, href string) (string, error) {
@@ -258,7 +323,7 @@ func resolveURL(base *url.URL, href string) (string, error) {
 	return base.ResolveReference(parsed).String(), nil
 }
 
-func buildRSS(cfg Config, items []FeedItem) RSS {
+func buildRSS(channel ChannelSettings, items []FeedItem) RSS {
 	rssItems := make([]Item, 0, len(items))
 	for _, item := range items {
 		rssItems = append(rssItems, Item{
@@ -271,17 +336,12 @@ func buildRSS(cfg Config, items []FeedItem) RSS {
 		})
 	}
 
-	channelLink := strings.TrimSpace(cfg.Link)
-	if channelLink == "" {
-		channelLink = cfg.URL
-	}
-
 	return RSS{
 		Version: "2.0",
 		Channel: Channel{
-			Title:       cfg.Title,
-			Link:        channelLink,
-			Description: cfg.Title,
+			Title:       channel.Title,
+			Link:        channel.Link,
+			Description: channel.Description,
 			Items:       rssItems,
 		},
 	}

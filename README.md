@@ -1,7 +1,7 @@
 # rssgen
 
-HTML ページから指定した一覧要素を抽出し、子要素内のリンクを RSS 2.0
-として出力する CLI です。
+複数の HTML ページから指定した一覧要素を抽出し、子要素内のリンクを
+一つの RSS 2.0 フィードとして出力する CLI です。
 
 ## 使い方
 
@@ -22,10 +22,12 @@ go run . -config config.example.yml -output feed.xml
 ```yaml
 settings:
   channel:
+    title: Music News
     link: https://basyura.org/rssgen/feed.xml
+    description: 複数サイトの更新情報
 
 feeds:
-  - title: basyura's feed
+  - title: B'z NEWS
     url: https://bz-vermillion.com/news/
     xpath: ul.news_list
 ```
@@ -34,8 +36,9 @@ feeds:
 `tag.class` 形式も利用できます。この場合は該当要素の直接の子要素を
 繰り返し項目とみなし、その子要素内の最初のリンクを RSS item にします。
 
-`feeds` は複数指定できます。複数指定した場合は RSS XML を標準出力へ
-順番に出力します。`-output` は設定が 1 件の場合のみ利用できます。
+`feeds` は複数指定できます。各サイトから取得した項目は一つの RSS
+チャンネルにまとめられ、同じ URL の項目は重複を除外します。
 
-`settings.channel.link` は RSS チャンネルのリンクです。未指定の場合は
-各 `feeds` の `url` が使われます。
+`settings.channel.title`、`settings.channel.link`、
+`settings.channel.description` は、統合後の RSS チャンネル情報です。
+いずれも必須です。
