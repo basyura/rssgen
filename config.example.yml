@@ -1,8 +1,13 @@
 settings:
     channel:
+        title: Music News
         link: https://basyura.org/rssgen/feed.xml
+        description: B'z と L'Arc-en-Ciel の更新情報
 
 feeds:
-    - title: basyura's feed
+    - title: B'z NEWS
       url: https://bz-vermillion.com/news/
       xpath: ul.news_list
+    - title: L'arc-en-Ciel NEWS
+      url: https://larc-en-ciel.com/s/n137/news/list
+      xpath: .news-index
