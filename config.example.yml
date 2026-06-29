@@ -3,6 +3,7 @@ settings:
         title: My Feed
         link: https://basyura.org/rssgen/feed.xml
         description: オレのフィード
+    limit: 20
 
 feeds:
     - title: B'z NEWS

@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -19,8 +20,6 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-const maxItemsPerFeed = 5
-
 type ConfigFile struct {
 	Settings Settings `yaml:"settings"`
 	Feeds    []Config `yaml:"feeds"`
@@ -28,6 +27,7 @@ type ConfigFile struct {
 
 type Settings struct {
 	Channel ChannelSettings `yaml:"channel"`
+	Limit   int             `yaml:"limit"`
 }
 
 type ChannelSettings struct {
@@ -108,7 +108,7 @@ func run(args []string, stdout io.Writer) error {
 	}
 
 	var buf bytes.Buffer
-	if err := writeRSS(&buf, buildRSS(configFile.Settings.Channel, items, time.Now())); err != nil {
+	if err := writeRSS(&buf, buildRSS(configFile.Settings.Channel, items, time.Now(), configFile.Settings.Limit)); err != nil {
 		return err
 	}
 
@@ -228,8 +228,7 @@ func collectItemsFromHTML(sourceURL, selector string, body []byte) ([]FeedItem, 
 	}
 
 	seen := map[string]struct{}{}
-	items := make([]FeedItem, 0, maxItemsPerFeed)
-parentsLoop:
+	var items []FeedItem
 	for _, parent := range parents {
 		for child := parent.FirstChild; child != nil; child = child.NextSibling {
 			if child.Type != html.ElementNode {
@@ -266,9 +265,6 @@ parentsLoop:
 			}
 			seen[link] = struct{}{}
 			items = append(items, FeedItem{Title: title, Date: date, Link: link})
-			if len(items) == maxItemsPerFeed {
-				break parentsLoop
-			}
 		}
 	}
 	return items, nil
@@ -325,8 +321,14 @@ func resolveURL(base *url.URL, href string) (string, error) {
 	return base.ResolveReference(parsed).String(), nil
 }
 
-func buildRSS(channel ChannelSettings, items []FeedItem, buildTime time.Time) RSS {
-	rssItems := make([]Item, 0, len(items))
+func buildRSS(channel ChannelSettings, items []FeedItem, buildTime time.Time, limit int) RSS {
+	type sortableItem struct {
+		item    Item
+		pubDate time.Time
+		hasDate bool
+	}
+
+	sortableItems := make([]sortableItem, 0, len(items))
 	for _, item := range items {
 		rssItem := Item{
 			Title: item.Title,
@@ -336,10 +338,32 @@ func buildRSS(channel ChannelSettings, items []FeedItem, buildTime time.Time) RS
 				Value:       item.Link,
 			},
 		}
+		sortableItem := sortableItem{item: rssItem}
 		if pubDate, ok := parseFeedItemDate(item.Date, buildTime.Location()); ok {
-			rssItem.PubDate = pubDate.Format(time.RFC1123Z)
+			sortableItem.item.PubDate = pubDate.Format(time.RFC1123Z)
+			sortableItem.pubDate = pubDate
+			sortableItem.hasDate = true
 		}
-		rssItems = append(rssItems, rssItem)
+		sortableItems = append(sortableItems, sortableItem)
+	}
+
+	sort.SliceStable(sortableItems, func(i, j int) bool {
+		left, right := sortableItems[i], sortableItems[j]
+		if left.hasDate != right.hasDate {
+			return left.hasDate
+		}
+		if !left.hasDate {
+			return false
+		}
+		return left.pubDate.After(right.pubDate)
+	})
+	if limit > 0 && limit < len(sortableItems) {
+		sortableItems = sortableItems[:limit]
+	}
+
+	rssItems := make([]Item, 0, len(sortableItems))
+	for _, sortableItem := range sortableItems {
+		rssItems = append(rssItems, sortableItem.item)
 	}
 
 	return RSS{
