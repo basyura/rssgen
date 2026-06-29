@@ -49,16 +49,18 @@ type RSS struct {
 }
 
 type Channel struct {
-	Title       string `xml:"title"`
-	Link        string `xml:"link"`
-	Description string `xml:"description"`
-	Items       []Item `xml:"item"`
+	Title         string `xml:"title"`
+	Link          string `xml:"link"`
+	Description   string `xml:"description"`
+	LastBuildDate string `xml:"lastBuildDate,omitempty"`
+	Items         []Item `xml:"item"`
 }
 
 type Item struct {
-	Title string `xml:"title"`
-	Link  string `xml:"link"`
-	GUID  GUID   `xml:"guid"`
+	Title   string `xml:"title"`
+	Link    string `xml:"link"`
+	PubDate string `xml:"pubDate,omitempty"`
+	GUID    GUID   `xml:"guid"`
 }
 
 type GUID struct {
@@ -106,7 +108,7 @@ func run(args []string, stdout io.Writer) error {
 	}
 
 	var buf bytes.Buffer
-	if err := writeRSS(&buf, buildRSS(configFile.Settings.Channel, items)); err != nil {
+	if err := writeRSS(&buf, buildRSS(configFile.Settings.Channel, items, time.Now())); err != nil {
 		return err
 	}
 
@@ -323,28 +325,48 @@ func resolveURL(base *url.URL, href string) (string, error) {
 	return base.ResolveReference(parsed).String(), nil
 }
 
-func buildRSS(channel ChannelSettings, items []FeedItem) RSS {
+func buildRSS(channel ChannelSettings, items []FeedItem, buildTime time.Time) RSS {
 	rssItems := make([]Item, 0, len(items))
 	for _, item := range items {
-		rssItems = append(rssItems, Item{
+		rssItem := Item{
 			Title: item.Title,
 			Link:  item.Link,
 			GUID: GUID{
 				IsPermaLink: "true",
 				Value:       item.Link,
 			},
-		})
+		}
+		if pubDate, ok := parseFeedItemDate(item.Date, buildTime.Location()); ok {
+			rssItem.PubDate = pubDate.Format(time.RFC1123Z)
+		}
+		rssItems = append(rssItems, rssItem)
 	}
 
 	return RSS{
 		Version: "2.0",
 		Channel: Channel{
-			Title:       channel.Title,
-			Link:        channel.Link,
-			Description: channel.Description,
-			Items:       rssItems,
+			Title:         channel.Title,
+			Link:          channel.Link,
+			Description:   channel.Description,
+			LastBuildDate: buildTime.Format(time.RFC1123Z),
+			Items:         rssItems,
 		},
 	}
+}
+
+func parseFeedItemDate(value string, loc *time.Location) (time.Time, bool) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return time.Time{}, false
+	}
+	if loc == nil {
+		loc = time.Local
+	}
+	parsed, err := time.ParseInLocation("2006.1.2", value, loc)
+	if err != nil {
+		return time.Time{}, false
+	}
+	return parsed, true
 }
 
 func writeRSS(w io.Writer, rss RSS) error {

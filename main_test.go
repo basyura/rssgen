@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestCollectItemsFromHTML(t *testing.T) {
@@ -93,17 +94,22 @@ func TestCollectItemsFromHTMLLimitsItemsPerFeed(t *testing.T) {
 }
 
 func TestBuildRSS(t *testing.T) {
+	jst := time.FixedZone("JST", 9*60*60)
+	buildTime := time.Date(2026, 6, 29, 10, 20, 30, 0, jst)
 	rss := buildRSS(ChannelSettings{
 		Title:       "Test Feed",
 		Link:        "https://feed.example.com/",
 		Description: "Test Description",
-	}, []FeedItem{{Title: "Entry", Link: "https://example.com/entry"}})
+	}, []FeedItem{
+		{Title: "Entry", Date: "2026.6.26", Link: "https://example.com/entry"},
+		{Title: "No Date", Link: "https://example.com/no-date"},
+	}, buildTime)
 
 	if rss.Version != "2.0" {
 		t.Fatalf("rss.Version = %q", rss.Version)
 	}
-	if len(rss.Channel.Items) != 1 {
-		t.Fatalf("len(rss.Channel.Items) = %d, want 1", len(rss.Channel.Items))
+	if len(rss.Channel.Items) != 2 {
+		t.Fatalf("len(rss.Channel.Items) = %d, want 2", len(rss.Channel.Items))
 	}
 	if rss.Channel.Link != "https://feed.example.com/" {
 		t.Fatalf("rss.Channel.Link = %q", rss.Channel.Link)
@@ -114,8 +120,17 @@ func TestBuildRSS(t *testing.T) {
 	if rss.Channel.Description != "Test Description" {
 		t.Fatalf("rss.Channel.Description = %q", rss.Channel.Description)
 	}
+	if rss.Channel.LastBuildDate != "Mon, 29 Jun 2026 10:20:30 +0900" {
+		t.Fatalf("LastBuildDate = %q", rss.Channel.LastBuildDate)
+	}
+	if rss.Channel.Items[0].PubDate != "Fri, 26 Jun 2026 00:00:00 +0900" {
+		t.Fatalf("PubDate = %q", rss.Channel.Items[0].PubDate)
+	}
 	if rss.Channel.Items[0].GUID.Value != "https://example.com/entry" {
 		t.Fatalf("GUID.Value = %q", rss.Channel.Items[0].GUID.Value)
+	}
+	if rss.Channel.Items[1].PubDate != "" {
+		t.Fatalf("PubDate without date = %q", rss.Channel.Items[1].PubDate)
 	}
 }
 
